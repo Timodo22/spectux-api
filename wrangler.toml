@@ -1,0 +1,8 @@
+name = "spectux-mollie-worker"
+main = "src/worker.js"
+compatibility_date = "2024-09-01"
+
+# Eventueel: route als je een eigen domein wilt gebruiken
+# [routes]
+# pattern = "api.jouwdomein.nl/*"
+# zone_id = "JE_ZONE_ID"
