@@ -138,8 +138,10 @@ async function handleCreateCustomTestPayment(request, env, url) {
     const customer = await customerRes.json();
     console.log("✅ Customer created:", customer.id);
 
-    // 2. Maak eerste Direct Debit payment van €1
-    console.log("📞 Creating first payment...");
+    // 2. Maak eerste betaling met iDEAL (of card) - €1
+    // We gebruiken GEEN sequenceType want dat is voor recurring payments
+    // Later, na deze betaling, maken we pas een mandaat aan
+    console.log("📞 Creating first payment with iDEAL...");
     
     const paymentPayload = {
       amount: {
@@ -147,9 +149,7 @@ async function handleCreateCustomTestPayment(request, env, url) {
         value: "1.00",
       },
       customerId: customer.id,
-      sequenceType: "first",
-      method: "directdebit",
-      description: "Spectux Custom testabonnement €1 / dag",
+      description: "Spectux Custom testabonnement - Eerste betaling €1",
       redirectUrl: `${redirectBaseUrl}/mollie/return?customerId=${encodeURIComponent(
         customer.id
       )}`,
@@ -157,6 +157,7 @@ async function handleCreateCustomTestPayment(request, env, url) {
       metadata: {
         plan: "custom-test",
         planName: "Custom Solution testabonnement",
+        setupForRecurring: "true", // marker dat dit voor recurring is
       },
     };
     console.log("Payment payload:", JSON.stringify(paymentPayload, null, 2));
@@ -284,6 +285,7 @@ async function handleWebhook(request, env) {
 
     console.log("✅ Payment status:", payment.status);
     console.log("Payment metadata:", JSON.stringify(payment.metadata, null, 2));
+    console.log("Payment method:", payment.method);
 
     // Alleen bij betaalde betaling voor ons testplan
     if (payment.status === "paid" && payment.metadata?.plan === "custom-test") {
@@ -298,9 +300,43 @@ async function handleWebhook(request, env) {
 
       console.log("👤 Customer ID:", customerId);
 
-      // 2. Maak subscription €1 / dag
+      // 2. Maak een mandaat aan voor toekomstige betalingen
+      // Dit gebruiken we voor de recurring subscription
+      console.log("📞 Creating mandate for recurring payments...");
+      
+      const mandatePayload = {
+        method: "directdebit",
+        consumerName: payment.details?.consumerName || "Test Customer",
+        consumerAccount: payment.details?.consumerAccount || "NL00TEST0000000000",
+      };
+      console.log("Mandate payload:", JSON.stringify(mandatePayload, null, 2));
+
+      const mandateRes = await fetch(
+        `${MOLLIE_API_BASE}/customers/${customerId}/mandates`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.MOLLIE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(mandatePayload),
+        }
+      );
+
+      if (!mandateRes.ok) {
+        const errText = await mandateRes.text();
+        console.error("❌ Error creating mandate:", errText);
+        console.log("⚠️ Skipping mandate creation, will create subscription without it");
+      } else {
+        const mandate = await mandateRes.json();
+        console.log("✅ Mandate created:", mandate.id);
+      }
+
+      // 3. Maak subscription €1 / dag
       const today = new Date();
-      const startDate = today.toISOString().slice(0, 10); // YYYY-MM-DD
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const startDate = tomorrow.toISOString().slice(0, 10); // Start morgen
 
       console.log("📞 Creating subscription starting:", startDate);
 
@@ -340,6 +376,7 @@ async function handleWebhook(request, env) {
 
       const sub = await subRes.json();
       console.log("✅ Subscription created:", sub.id, "for customer", customerId);
+      console.log("📅 Next payment on:", sub.nextPaymentDate);
     } else {
       console.log("ℹ️ Payment not eligible for subscription creation");
       console.log("Status:", payment.status, "Plan:", payment.metadata?.plan);
