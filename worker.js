@@ -138,9 +138,8 @@ async function handleCreateCustomTestPayment(request, env, url) {
     const customer = await customerRes.json();
     console.log("✅ Customer created:", customer.id);
 
-    // 2. Maak eerste betaling met iDEAL (of card) - €1
-    // We gebruiken GEEN sequenceType want dat is voor recurring payments
-    // Later, na deze betaling, maken we pas een mandaat aan
+    // 2. Maak eerste betaling met iDEAL - €1
+    // We forceren iDEAL voor nu, dit werkt altijd in test mode
     console.log("📞 Creating first payment with iDEAL...");
     
     const paymentPayload = {
@@ -149,6 +148,7 @@ async function handleCreateCustomTestPayment(request, env, url) {
         value: "1.00",
       },
       customerId: customer.id,
+      method: "ideal", // Forceer iDEAL voor test
       description: "Spectux Custom testabonnement - Eerste betaling €1",
       redirectUrl: `${redirectBaseUrl}/mollie/return?customerId=${encodeURIComponent(
         customer.id
