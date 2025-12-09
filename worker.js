@@ -1,5 +1,6 @@
 const MOLLIE_API_BASE = "https://api.mollie.com/v2";
 
+// Hulpfunctie om CORS headers toe te voegen
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -12,6 +13,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // 1. OPTIONS (Preflight) afhandeling
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
@@ -24,7 +26,7 @@ export default {
       return mollieWebhook(request, env);
     }
 
-    // VOEG CORS TOE aan de 404 response
+    // 404 Not Found (met CORS headers)
     return new Response("Not found", { 
       status: 404,
       headers: corsHeaders()
@@ -40,9 +42,9 @@ async function startSubscription(request, env, url) {
     const { name, email, plan } = await request.json();
 
     if (!name || !email || !plan) {
-      return new Response("Missing data", { 
+      return new Response(JSON.stringify({ error: "Missing data (Name, Email, or Plan)" }), { 
         status: 400,
-        headers: corsHeaders(), // ⬅️ CORS toegevoegd
+        headers: { "Content-Type": "application/json", ...corsHeaders() },
       });
     }
 
@@ -53,12 +55,12 @@ async function startSubscription(request, env, url) {
     };
 
     const selectedPlan = plans[plan];
-    if (!selectedPlan) return new Response("Invalid plan", { 
+    if (!selectedPlan) return new Response(JSON.stringify({ error: "Invalid plan selected" }), { 
       status: 400,
-      headers: corsHeaders(), // ⬅️ CORS toegevoegd
+      headers: { "Content-Type": "application/json", ...corsHeaders() },
     });
 
-    // 1️⃣ Customer
+    // 1️⃣ Customer aanmaken of vinden (Mollie maakt een nieuwe klant als de email uniek is)
     const customerRes = await fetch(`${MOLLIE_API_BASE}/customers`, {
       method: "POST",
       headers: {
@@ -69,13 +71,12 @@ async function startSubscription(request, env, url) {
     });
     const customer = await customerRes.json();
     
-    // Foutafhandeling voor Mollie API errors
     if (customer.status === 401 || customer.status >= 400) {
-        return new Response(JSON.stringify({ error: customer.detail || "Mollie customer aanmaak mislukt" }), {
+        return new Response(JSON.stringify({ error: customer.detail || "Mollie customer aanmaak/opzoeken mislukt." }), {
             status: customer.status || 500,
             headers: {
                 "Content-Type": "application/json",
-                ...corsHeaders(), // ⬅️ CORS toegevoegd
+                ...corsHeaders(),
             }
         });
     }
@@ -91,36 +92,36 @@ async function startSubscription(request, env, url) {
         amount: { currency: "EUR", value: selectedPlan.amount },
         customerId: customer.id,
         sequenceType: "first",
-        description: "Spectux Verificatie Betaling",
-        redirectUrl: "https://jouwsite.nl/succes",
+        description: `Verificatie Betaling ${selectedPlan.type}`,
+        redirectUrl: "https://jouwsite.nl/succes", // Wijzig naar je succes pagina
         webhookUrl: `${url.origin}/api/mollie/webhook`,
         metadata: {
           planType: selectedPlan.type,
+          customerName: name,
         },
       }),
     });
 
     const payment = await paymentRes.json();
     
-    // Foutafhandeling voor Mollie API errors
-    if (payment.status === 401 || payment.status >= 400) {
-        return new Response(JSON.stringify({ error: payment.detail || "Mollie betalingsaanmaak mislukt" }), {
+    if (payment.status === 401 || payment.status >= 400 || !payment._links?.checkout?.href) {
+        return new Response(JSON.stringify({ error: payment.detail || "Mollie betalingsaanmaak mislukt. Geen checkout URL." }), {
             status: payment.status || 500,
             headers: {
                 "Content-Type": "application/json",
-                ...corsHeaders(), // ⬅️ CORS toegevoegd
+                ...corsHeaders(),
             }
         });
     }
 
-    // ✅ Succes Response
+    // ✅ Succes Response (stuurt de checkout URL terug)
     return new Response(
       JSON.stringify({ checkoutUrl: payment._links.checkout.href }),
       {
         status: 200,
         headers: {
           "Content-Type": "application/json",
-          ...corsHeaders(), // ⬅️ CORS toegevoegd
+          ...corsHeaders(),
         },
       }
     );
@@ -132,7 +133,7 @@ async function startSubscription(request, env, url) {
         status: 500,
         headers: {
           "Content-Type": "application/json",
-          ...corsHeaders(), // ⬅️ CORS toegevoegd
+          ...corsHeaders(),
         },
       }
     );
@@ -140,7 +141,7 @@ async function startSubscription(request, env, url) {
 }
 
 /* ===============================
-    2️⃣ VEILIGE WEBHOOK
+    2️⃣ VEILIGE WEBHOOK (IDEMPOTENTIE)
 ================================*/
 async function mollieWebhook(request, env) {
   const data = await request.formData();
@@ -152,11 +153,12 @@ async function mollieWebhook(request, env) {
   });
   const payment = await paymentRes.json();
 
+  // Alleen doorgaan als de betaling betaald is (paid)
   if (payment.status !== "paid") return new Response("Not paid");
 
   const customerId = payment.customerId;
 
-  // ✅ DUBBELCHECK: BESTAAT ER AL EEN ABBO?
+  // ✅ DUBBELCHECK: BESTAAT ER AL EEN ABBO? (Voorkomt dubbele aanmaak)
   const subsRes = await fetch(`${MOLLIE_API_BASE}/customers/${customerId}/subscriptions`, {
     headers: { Authorization: `Bearer ${env.MOLLIE_API_KEY}` },
   });
@@ -164,7 +166,7 @@ async function mollieWebhook(request, env) {
 
   const activeSub = subs?._embedded?.subscriptions?.find(s => s.status === "active");
   if (activeSub) {
-    console.log("⛔ Abonnement bestaat al → niets doen");
+    console.log(`⛔ Abonnement ${activeSub.id} bestaat al voor klant ${customerId} → niets doen`);
     return new Response("Subscription already exists");
   }
 
@@ -172,7 +174,7 @@ async function mollieWebhook(request, env) {
   const now = new Date();
   const startDate = new Date(now.getFullYear(), now.getMonth() + 1, 1)
     .toISOString()
-    .split("T")[0];
+    .split("T")[0]; // Zet de datum op de 1e van de volgende maand
 
   let amount = "1.00";
   let interval = "1 day";
@@ -186,12 +188,16 @@ async function mollieWebhook(request, env) {
     amount = "15.00";
     interval = "1 month";
   }
+  
+  // Voeg een eerste afschrijvingsdatum toe om te zorgen dat het abonnement
+  // daadwerkelijk start op de 1e van de volgende maand.
+  const firstPaymentDate = startDate; 
 
   const subPayload = {
     amount: { currency: "EUR", value: amount },
     interval,
-    description: "Spectux Abonnement",
-    startDate,
+    description: `Spectux Abonnement (${payment.metadata.planType})`,
+    startDate: firstPaymentDate,
     webhookUrl: `${new URL(request.url).origin}/api/mollie/webhook`,
   };
 
@@ -205,7 +211,7 @@ async function mollieWebhook(request, env) {
   });
 
   if (subRes.ok) {
-    console.log("✅ Abonnement veilig aangemaakt");
+    console.log(`✅ Abonnement veilig aangemaakt voor klant ${customerId}, start ${firstPaymentDate}`);
   } else {
     console.error("❌ Abonnement fout", await subRes.text());
   }
