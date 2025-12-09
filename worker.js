@@ -24,66 +24,123 @@ export default {
       return mollieWebhook(request, env);
     }
 
-    return new Response("Not found", { status: 404 });
+    // VOEG CORS TOE aan de 404 response
+    return new Response("Not found", { 
+      status: 404,
+      headers: corsHeaders()
+    });
   },
 };
 
 /* ===============================
-   1️⃣ START BETALING + PLAN KEUZE
+    1️⃣ START BETALING + PLAN KEUZE
 ================================*/
 async function startSubscription(request, env, url) {
-  const { name, email, plan } = await request.json();
+  try {
+    const { name, email, plan } = await request.json();
 
-  if (!name || !email || !plan) {
-    return new Response("Missing data", { status: 400 });
-  }
+    if (!name || !email || !plan) {
+      return new Response("Missing data", { 
+        status: 400,
+        headers: corsHeaders(), // ⬅️ CORS toegevoegd
+      });
+    }
 
-  const plans = {
-    test: { amount: "0.01", type: "daily-test" },
-    monthly10: { amount: "10.00", type: "monthly-10" },
-    monthly15: { amount: "15.00", type: "monthly-15" },
-  };
+    const plans = {
+      test: { amount: "0.01", type: "daily-test" },
+      monthly10: { amount: "10.00", type: "monthly-10" },
+      monthly15: { amount: "15.00", type: "monthly-15" },
+    };
 
-  const selectedPlan = plans[plan];
-  if (!selectedPlan) return new Response("Invalid plan", { status: 400 });
+    const selectedPlan = plans[plan];
+    if (!selectedPlan) return new Response("Invalid plan", { 
+      status: 400,
+      headers: corsHeaders(), // ⬅️ CORS toegevoegd
+    });
 
-  // 1️⃣ Customer
-  const customerRes = await fetch(`${MOLLIE_API_BASE}/customers`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.MOLLIE_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ name, email }),
-  });
-  const customer = await customerRes.json();
-
-  // 2️⃣ First payment (MANDATE)
-  const paymentRes = await fetch(`${MOLLIE_API_BASE}/payments`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.MOLLIE_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      amount: { currency: "EUR", value: selectedPlan.amount },
-      customerId: customer.id,
-      sequenceType: "first",
-      description: "Spectux Verificatie Betaling",
-      redirectUrl: "https://jouwsite.nl/succes",
-      webhookUrl: `${url.origin}/api/mollie/webhook`,
-      metadata: {
-        planType: selectedPlan.type,
+    // 1️⃣ Customer
+    const customerRes = await fetch(`${MOLLIE_API_BASE}/customers`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.MOLLIE_API_KEY}`,
+        "Content-Type": "application/json",
       },
-    }),
-  });
+      body: JSON.stringify({ name, email }),
+    });
+    const customer = await customerRes.json();
+    
+    // Foutafhandeling voor Mollie API errors
+    if (customer.status === 401 || customer.status >= 400) {
+        return new Response(JSON.stringify({ error: customer.detail || "Mollie customer aanmaak mislukt" }), {
+            status: customer.status || 500,
+            headers: {
+                "Content-Type": "application/json",
+                ...corsHeaders(), // ⬅️ CORS toegevoegd
+            }
+        });
+    }
 
-  const payment = await paymentRes.json();
-  return Response.json({ checkoutUrl: payment._links.checkout.href });
+    // 2️⃣ First payment (MANDATE)
+    const paymentRes = await fetch(`${MOLLIE_API_BASE}/payments`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.MOLLIE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        amount: { currency: "EUR", value: selectedPlan.amount },
+        customerId: customer.id,
+        sequenceType: "first",
+        description: "Spectux Verificatie Betaling",
+        redirectUrl: "https://jouwsite.nl/succes",
+        webhookUrl: `${url.origin}/api/mollie/webhook`,
+        metadata: {
+          planType: selectedPlan.type,
+        },
+      }),
+    });
+
+    const payment = await paymentRes.json();
+    
+    // Foutafhandeling voor Mollie API errors
+    if (payment.status === 401 || payment.status >= 400) {
+        return new Response(JSON.stringify({ error: payment.detail || "Mollie betalingsaanmaak mislukt" }), {
+            status: payment.status || 500,
+            headers: {
+                "Content-Type": "application/json",
+                ...corsHeaders(), // ⬅️ CORS toegevoegd
+            }
+        });
+    }
+
+    // ✅ Succes Response
+    return new Response(
+      JSON.stringify({ checkoutUrl: payment._links.checkout.href }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders(), // ⬅️ CORS toegevoegd
+        },
+      }
+    );
+  } catch (err) {
+    // Vang JSON parse errors en andere onverwachte worker errors af
+    return new Response(
+      JSON.stringify({ error: `Worker error: ${err.message}` }),
+      {
+        status: 500,
+        headers: {
+          "Content-Type": "application/json",
+          ...corsHeaders(), // ⬅️ CORS toegevoegd
+        },
+      }
+    );
+  }
 }
 
 /* ===============================
-   2️⃣ VEILIGE WEBHOOK
+    2️⃣ VEILIGE WEBHOOK
 ================================*/
 async function mollieWebhook(request, env) {
   const data = await request.formData();
