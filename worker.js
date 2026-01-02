@@ -55,11 +55,17 @@ async function handleStartSubscription(request, env) {
     if (!customerRes.ok) throw new Error("Mollie Customer creation failed");
 
     // B. Bepaal het bedrag op basis van planKey uit frontend
+    // NU OOK VOOR HET 30 EURO PLAN
     let amountValue = "10.00"; 
-    if (plan === "monthly15") amountValue = "15.00";
+    if (plan === "monthly15") {
+      amountValue = "15.00";
+    } else if (plan === "monthly30") {
+      amountValue = "30.00";
+    } else if (plan === "monthly10") {
+      amountValue = "10.00";
+    }
 
     // C. Maak de eerste betaling (First Payment) aan
-    // Hiermee geeft de klant toestemming voor toekomstige incasso's
     const paymentRes = await fetch(`${MOLLIE_API_BASE}/payments`, {
       method: "POST",
       headers: {
@@ -100,7 +106,7 @@ async function handleWebhook(request, env) {
     const data = await request.formData();
     const paymentId = data.get("id");
 
-    if (!paymentId) return new Response("OK"); // Geen ID = negeren
+    if (!paymentId) return new Response("OK");
 
     // 1. Haal betaling op
     const paymentRes = await fetch(`${MOLLIE_API_BASE}/payments/${paymentId}`, {
@@ -115,7 +121,7 @@ async function handleWebhook(request, env) {
 
     const customerId = payment.customerId;
 
-    // 3. Check of er al een abonnement loopt (race condition preventie)
+    // 3. Check of er al een abonnement loopt
     const subsRes = await fetch(`${MOLLIE_API_BASE}/customers/${customerId}/subscriptions`, {
       headers: { Authorization: `Bearer ${env.MOLLIE_API_KEY}` },
     });
@@ -125,6 +131,7 @@ async function handleWebhook(request, env) {
     if (hasActive) return new Response("OK");
 
     // 4. Maak het abonnement aan
+    // Dit pakt automatisch het bedrag over van de eerste betaling (dus ook de €30)
     const startDate = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1)
       .toISOString()
       .split("T")[0];
