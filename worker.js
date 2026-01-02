@@ -77,7 +77,7 @@ async function handleStartSubscription(request, env) {
         customerId: customer.id,
         sequenceType: "first", 
         description: `Eerste betaling Spectux: ${plan}`,
-        redirectUrl: "https://spectux.nl/success", // Pas dit aan naar je eigen site
+        redirectUrl: "https://spectux.com", // Pas dit aan naar je eigen site
         webhookUrl: `${new URL(request.url).origin}/api/mollie/webhook`,
         metadata: { planType: plan },
       }),
